@@ -5,13 +5,15 @@ NX = 5
 NY = 5
 N = NX * NY
 
-W_EXC = 5.0
-PLASTICITY_AMOUNT = 0.001
+W_EXC = 0.5
+PLASTICITY_AMOUNT = 0.1
+WEIGHT_THRESHOLD = 5.0
 
 I_EXT = 3.0
 DECAY = 0.5
 
-NT = 10000
+NT_LEARNING = 10000
+NT_RECALL = 5000
 DT = 0.1
 
 TAU = 20.0
@@ -21,13 +23,11 @@ R_M = 16.0
 
 REFRACTORY_PERIOD = 2.0
 
-cross_pattern = np.array([
-    [1, 0, 0, 0, 1],
-    [0, 1, 0, 1, 0],
-    [0, 0, 1, 0, 0],
-    [0, 1, 0, 1, 0],
-    [1, 0, 0, 0, 1]
-])
+CROSS_NEURONS = [0, 4, 6, 8, 12, 16, 18, 20, 24]
+
+LEARNING_STIMULATION = CROSS_NEURONS
+
+RECALL_STIMULATION = [20, 16]
 
 
 def create_connections():
@@ -35,12 +35,10 @@ def create_connections():
     connections = np.zeros((N, N), dtype=int)
     weights = np.zeros((N, N), dtype=float)
 
-    flat_pattern = cross_pattern.flatten()
+    for post in CROSS_NEURONS:
+        for pre in CROSS_NEURONS:
 
-    for post in range(N):
-        for pre in range(N):
-
-            if post != pre and flat_pattern[post] == 1 and flat_pattern[pre] == 1:
+            if post != pre:
 
                 connections[post, pre] = 1
                 weights[post, pre] = W_EXC
@@ -48,20 +46,11 @@ def create_connections():
     return connections, weights
 
 
-def set_input():
-
-    external_input = np.zeros(N)
-
-    external_input[20] = I_EXT
-    external_input[16] = I_EXT
-
-    return external_input
-
-def run_network(seed=23):
+def run_experiment(seed=23):
 
     connections, weights = create_connections()
 
-    external_input = set_input()
+    rng = np.random.default_rng(seed)
 
     voltage = np.full(N, E_REST)
 
@@ -69,13 +58,15 @@ def run_network(seed=23):
 
     spike_state = np.zeros(N, dtype=int)
 
-    spike_count = np.zeros(N, dtype=int)
+    spike_count_learning = np.zeros(N, dtype=int)
 
     refractory_timer = np.zeros(N)
 
-    rng = np.random.default_rng(seed)
+    learning_complete = False
 
-    for t in range(NT):
+    learning_step = 0
+
+    for t in range(NT_LEARNING):
 
         new_spike_state = np.zeros(N, dtype=int)
 
@@ -83,6 +74,11 @@ def run_network(seed=23):
             refractory_timer - DT,
             0
         )
+
+        external_input = np.zeros(N)
+
+        for neuron in LEARNING_STIMULATION:
+            external_input[neuron] = I_EXT
 
         for i in range(N):
 
@@ -100,7 +96,9 @@ def run_network(seed=23):
         for i in range(N):
 
             if refractory_timer[i] > 0:
+
                 voltage[i] = E_REST
+
                 continue
 
             random_input = rng.random()
@@ -122,7 +120,7 @@ def run_network(seed=23):
 
                 new_spike_state[i] = 1
 
-                spike_count[i] += 1
+                spike_count_learning[i] += 1
 
                 refractory_timer[i] = REFRACTORY_PERIOD
 
@@ -138,21 +136,119 @@ def run_network(seed=23):
 
         spike_state = new_spike_state
 
-    return spike_count.reshape(NY, NX), weights
+        maximum_weight = np.max(weights)
+
+        if maximum_weight >= WEIGHT_THRESHOLD:
+
+            learning_complete = True
+
+            learning_step = t + 1
+
+            break
+
+    voltage = np.full(N, E_REST)
+
+    synaptic_conductance = np.zeros(N)
+
+    spike_state = np.zeros(N, dtype=int)
+
+    spike_count_recall = np.zeros(N, dtype=int)
+
+    refractory_timer = np.zeros(N)
+
+    for t in range(NT_RECALL):
+
+        new_spike_state = np.zeros(N, dtype=int)
+
+        refractory_timer = np.maximum(
+            refractory_timer - DT,
+            0
+        )
+
+        external_input = np.zeros(N)
+
+        for neuron in RECALL_STIMULATION:
+            external_input[neuron] = I_EXT
+
+        for i in range(N):
+
+            recurrent_input = np.sum(
+                connections[i, :] *
+                weights[i, :] *
+                spike_state
+            )
+
+            synaptic_conductance[i] = (
+                DECAY * synaptic_conductance[i]
+                + recurrent_input
+            )
+
+        for i in range(N):
+
+            if refractory_timer[i] > 0:
+
+                voltage[i] = E_REST
+
+                continue
+
+            random_input = rng.random()
+
+            total_input = (
+                external_input[i]
+                + synaptic_conductance[i]
+                + random_input
+            )
+
+            voltage[i] += DT * (
+                -(voltage[i] - E_REST)
+                + R_M * total_input
+            ) / TAU
+
+            if voltage[i] >= THETA:
+
+                voltage[i] = E_REST
+
+                new_spike_state[i] = 1
+
+                spike_count_recall[i] += 1
+
+                refractory_timer[i] = REFRACTORY_PERIOD
+
+        spike_state = new_spike_state
+
+    return (
+        spike_count_learning,
+        spike_count_recall,
+        weights,
+        learning_complete,
+        learning_step
+    )
 
 
-cross_result, final_weights = run_network()
+learning_counts, recall_counts, final_weights, learning_complete, learning_step = run_experiment()
 
-print("CROSS PATTERN SPIKE COUNTS")
-print(cross_result)
+
+print("LEARNING COMPLETE:", learning_complete)
+
+print("LEARNING STEP:", learning_step)
+
+print("\nLEARNING SPIKE COUNTS")
+
+print(learning_counts.reshape(NY, NX))
+
+print("\nRECALL SPIKE COUNTS")
+
+print(recall_counts.reshape(NY, NX))
 
 print("\nFINAL SYNAPTIC WEIGHTS")
+
 print(final_weights)
+
 
 plt.figure(figsize=(7, 7))
 
 plt.imshow(
-    cross_result,
+    recall_counts.reshape(NY, NX),
     cmap="viridis",
     interpolation="nearest"
 )
@@ -160,12 +256,13 @@ plt.imshow(
 plt.colorbar(label="Spike Count")
 
 for i in range(NY):
+
     for j in range(NX):
 
         plt.text(
             j,
             i,
-            str(cross_result[i, j]),
+            str(recall_counts.reshape(NY, NX)[i, j]),
             ha="center",
             va="center",
             fontsize=14,
@@ -178,7 +275,8 @@ plt.yticks(range(NY), range(NY))
 plt.xlabel("X position")
 plt.ylabel("Y position")
 
-plt.title("CROSS (X) Pattern with LIF and Synaptic Plasticity")
+plt.title("CROSS Pattern Recall After Synaptic Plasticity")
 
 plt.tight_layout()
+
 plt.show()
